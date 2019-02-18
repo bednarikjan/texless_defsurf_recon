@@ -1,0 +1,65 @@
+# Paths
+################################################################################
+path_train_run: '../train_runs'
+
+# Dataset.
+path_imgs: '../data/cloth/images'
+path_normals: '../data/cloth/normals'
+path_dmaps: '../data/cloth/depth_maps'
+path_meshes: ''
+
+# Sequences.
+seqs_tr: [
+  'Ld_bottom_edge',
+  'Ld_top_edge',
+  'Ll_bottom_edge',
+  'Ll_left_edge',
+  'Ll_tl_tl_corns',
+  'Ll_top_edge',
+  'Lr_bottom_edge',
+  'Lr_bottom_edge_tl_corn',
+  'Lr_left_edge',
+  'Lr_tl_tr_corns',
+  'Lr_top_edge_1',
+  'Lr_top_edge_2',
+  'Lr_top_edge_3',
+  'Lr_top_edge_4']
+
+seqs_va: ['Lc_top_edge_a']
+
+# Model
+################################################################################
+normals_stream: True
+depth_stream: True
+mesh_stream: False
+
+input_shape: [224, 224, 3]
+mesh_verts: 961
+
+kappa: 10.0
+w_normals: 1.0
+w_depth: 3.0
+w_coords: 0.0
+
+# Training
+################################################################################
+epochs: 512
+batch_size: 32
+lr: 0.001
+
+red_lr_plateau: true
+red_lr_patience: 30
+red_lr_factor: 0.5
+red_lr_min_lr: 0.00001
+red_lr_eps: 0.0001
+
+early_stopping: true
+early_stopping_patience: 30
+early_stopping_eps: 0.0001
+
+period_save_weights: 1
+
+# GPU
+################################################################################
+flag_use_gpu_fraction: true
+gpu_fraction: 1.0
