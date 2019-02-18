@@ -33,10 +33,17 @@ copied and model weights and optimizer parameters are being continuously saved.
 ### Configuration
 All the parameters, namely the architecture, input data, optimizer settings,
 learning rate scheduler etc. can be set using the configuration file `*.yaml`.
-See `config_n.yaml` and `config_nd.yaml` for examples. 
+See `config_n.yaml` and `config_nd.yaml` for examples.
     
 ### Example of reproducing the `cloth-cloth` experiment
-- `python train.py --config config_n.yaml`
-- `python train.py --config config_nd.yaml --model_state ../train_runs/N_wn1.0_k10.0/model_params_epN.h5` 
+1. Set the parameters `path_imgs`, `path_normals` and `path_dmaps` to reflect the
+path to the dataset.
+2. Set the parameter `path_train_run` to a directory which will contain
+training run data.
+3. Train an architecture with normals stream only:
+    - `python train.py --config config_n.yaml`
+4. Train an architecture with normals and depth streams and initialize it with
+the weights from the previous run.
+    - `python train.py --config config_nd.yaml --model_state ../train_runs/N_wn1.0_k10.0/model_params_epN.h5` 
 (N has to be replaced by an actual number)
 
