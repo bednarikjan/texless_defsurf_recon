@@ -499,14 +499,14 @@ def normals2depth(nmap, s=1.0, t=0.0):
     j_ones_d = inds_z_d
     data_ones_d = np.ones((Arows // 2,))
 
-    # Concat to get indices and data for creating sprase matrix.
+    # Concat to get indices and data for creating sparse matrix.
     data = np.concatenate((data_m_ones, data_ones_r, data_ones_d), axis=0)
     i_inds = np.concatenate((i_m_ones, i_ones_r, i_ones_d), axis=0)
     j_inds = np.concatenate((j_m_ones, j_ones_r, j_ones_d), axis=0)
 
     As = sparse.coo_matrix((data, (i_inds, j_inds)), (Arows, Acols))
 
-    ### Build dense vector b of the LS system Ax = b
+    ### Build dense vector b of the LS system Ax = b.
     b = -(nme[mask_n][:, :2] / nme[mask_n][:, 2][:, None]).flatten()
 
     # Solve for unknown x: Ax = b.
