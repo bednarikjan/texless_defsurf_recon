@@ -53,9 +53,9 @@ red_lr_factor: 0.5
 red_lr_min_lr: 0.00001
 red_lr_eps: 0.0001
 
-early_stopping: true
-early_stopping_patience: 30
-early_stopping_eps: 0.0001
+early_stopping: false
+early_stopping_patience: 0
+early_stopping_eps: 0.0
 
 period_save_weights: 1
 
