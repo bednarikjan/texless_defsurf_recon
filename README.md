@@ -10,7 +10,9 @@ Tested with `Python 3.6` and the following libraries:
 - Keras 2.2.4
 - tensorflow-gpu 1.12.0 
 - numpy 1.16.1
+- scipy 1.2.1
 - matplotlib 3.0.2
+- opencv-python 4.0.0.21
 - PyYAML 3.13
 
 ## Dataset

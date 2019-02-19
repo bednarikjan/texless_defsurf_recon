@@ -8,7 +8,10 @@ import datetime
 import random
 
 # 3rd party
+import cv2
 import numpy as np
+from scipy import sparse
+from scipy.sparse import linalg as spla
 import matplotlib.pyplot as plt
 
 
@@ -364,3 +367,234 @@ def get_conf_model_optim(path_trrun):
     return jn(path_trrun, conf[0]), \
            jn(path_trrun, model_params[0]), \
            jn(path_trrun, optim_params[0])
+
+
+def get_mask(img, fgrd=True):
+    """ Returns the binary mask where foregournd corresponds to non-zero
+    pixels (at least one channel has to be non-zero). `fgrd` flag controls
+    whether foreground pixels are True or False.
+
+    Args:
+        img (np.array of float): (H, W, 3)-tensor, (H, W)-image of 3D normals.
+        fgrd (bool): Whether to return foreground mask.
+
+    Returns:
+        np.array of bool: (H, W)-matrix, True - foreground, False - background.
+    """
+
+    mask = np.sum(np.abs(img), axis=2).astype(np.bool)
+
+    if not fgrd:
+        mask = (1 - mask).astype(np.bool)
+
+    return mask
+
+
+def normals2depth(nmap, s=1.0, t=0.0):
+    """ Computes depth map from normal map using least squares and finite
+    differences in depth. Orthographic camera model is assumed, however,
+    this normally works pretty well even if the data come from perspective
+    (pinhole) camera model. The actual normals do not need to be rectangular,
+    but the background is required to be [0, 0, 0].
+
+    Expected coordinate frame as in OpenCV:
+
+      _ z
+      /|
+     /
+    +---> x (= u)
+    |
+    |
+    v y (= v)
+
+    Args:
+        nmap (np.array): (H, W, 3)-tensor, (H, W)-image of unit-length 3D
+            normals.
+        s (float): Scale mapping real size to pixel size. s = dx/du = dy/dv,
+            i.e. assuming orthographic projection, s tells how big one pixel is
+            in real unit (e.g. meters). Since the reconstruction is up to scale
+            s, if set properly, the reconstruction would best relate to real
+            object.
+        t (float): Translation. The reconstruction is up to translation.
+
+    Returns:
+        dmap (np.array): (H, W)-array of pixel-wise depths (depth corresponds
+            to Z axis).
+    """
+
+    def extend_mask_rd(mask, iters=1):
+        """ Extends the mask (foreground) one step to right and down. Example:
+
+        0 0 0 0 0      0 0 0 0 0
+        0 1 1 0 0      0 1 1 1 0
+        0 1 0 0 0  ->  0 1 1 0 0
+        0 1 1 1 1      0 1 1 1 1
+        0 0 1 0 0      0 0 1 1 0
+
+        Args:
+            mask (np.array): (H, W)-matrix, binary array with 1 = foreground,
+                0 = background
+            iters (int): Number of iterations to extend the mask.
+
+        Returns:
+            np.array: (H, W)-matrix of the same type as `mask`.
+        """
+
+        kernel = np.array([[1, 1], [1, 0]], dtype=np.uint8)
+
+        # Convolution, thus kernel needs to be flipped vertic. and horizont.
+        kernel = cv2.flip(cv2.flip(kernel, 0), 1)
+
+        m = mask.astype(np.uint8)
+        m = cv2.dilate(m, kernel, iterations=iters)
+
+        return m.astype(mask.dtype)
+
+    # Extending the normals map by 2 pixels along right and bottom edge.
+    nme = np.zeros((nmap.shape[0] + 2, nmap.shape[1] + 2, 3), dtype=nmap.dtype)
+    nme[:-2, :-2] = nmap
+
+    # Copy the normals 1 step right and down - prevent ill-posed LS problem.
+    m1 = get_mask(nme, fgrd=False)
+    nme[:, 1:] += nme[:, :-1] * m1[:, 1:][..., None]
+    m2 = get_mask(nme, fgrd=False)
+    nme[1:, :] += nme[:-1, :] * m2[1:, :][..., None]
+
+    # Mask of non-zero normals.
+    mask_n = get_mask(nme)
+    # Mask of non-zero depth values (to be reconstructed).
+    mask_z = extend_mask_rd(mask_n)
+
+    # Get dimensions of the matrix A for the LS system Ax = b
+    Arows = np.sum(mask_n) * 2
+    Acols = np.sum(mask_z)
+
+    ### Create sparse matrix A.
+    inds_z = np.copy(mask_z).astype(np.int32)
+    inds_z[inds_z == 0] = -1
+    inds_z[inds_z != -1] = np.arange(Acols)
+
+    # minus ones
+    inds_z_tl = inds_z[mask_n].flatten()
+
+    i_m_ones = np.arange(Arows)
+    j_m_ones = np.stack([inds_z_tl] * 2, axis=1).flatten()
+    data_m_ones = -np.ones((Arows,))
+
+    # ones from right
+    mask_ones_r = np.zeros_like(mask_n, dtype=np.bool)
+    mask_ones_r[:, 1:] = mask_n[:, :-1]
+    inds_z_r = inds_z[mask_ones_r].flatten()
+
+    i_ones_r = np.arange(Arows // 2) * 2
+    j_ones_r = inds_z_r
+    data_ones_r = np.ones((Arows // 2,))
+
+    # ones from down
+    mask_ones_d = np.zeros_like(mask_n, dtype=np.bool)
+    mask_ones_d[1:, :] = mask_n[:-1, :]
+    inds_z_d = inds_z[mask_ones_d].flatten()
+
+    i_ones_d = i_ones_r + 1
+    j_ones_d = inds_z_d
+    data_ones_d = np.ones((Arows // 2,))
+
+    # Concat to get indices and data for creating sprase matrix.
+    data = np.concatenate((data_m_ones, data_ones_r, data_ones_d), axis=0)
+    i_inds = np.concatenate((i_m_ones, i_ones_r, i_ones_d), axis=0)
+    j_inds = np.concatenate((j_m_ones, j_ones_r, j_ones_d), axis=0)
+
+    As = sparse.coo_matrix((data, (i_inds, j_inds)), (Arows, Acols))
+
+    ### Build dense vector b of the LS system Ax = b
+    b = -(nme[mask_n][:, :2] / nme[mask_n][:, 2][:, None]).flatten()
+
+    # Solve for unknown x: Ax = b.
+    z = spla.lsmr(As, b)[0]
+
+    # Scale and translate z.
+    z = z * s + t
+
+    # Create depth map.
+    dmap = np.zeros_like(mask_z, dtype=np.float64)
+    dmap[mask_z] = z
+
+    # Delete artificially constructed depth values on the very right and bottom.
+    dmap[get_mask(nme, fgrd=False)] = 0.0
+
+    # Get the depth map of the original normal map size.
+    dmap = dmap[:-2, :-2]
+
+    return dmap
+
+
+def procrustes(x_to, x_from, scaling=False, reflection='best', gentle=True):
+    """ Finds Procrustes tf of `x_form` to best match `x_to`.
+
+    Args:
+        x_to (np.array): Pcloud to which `x_from` will be aligned. Shape
+            (V, 3), V is # vertices.
+        x_from (np.array): Pcloud to be aligned. Shape (V, 3), V is # vertices.
+        scaling (bool): Whether to use scaling.
+        reflection (str): Whether to use reflection.
+        gentle (bool): Whether to raise Exception when SVD fails
+            (`gentle == False`) or rather to print warning and
+            continue with unchanged data (`gentle` == True).
+
+    Returns:
+        np.array: Aligned pcloud, shape (V, 3).
+    """
+
+    n, m = x_to.shape
+    ny, my = x_from.shape
+
+    mu_x = x_to.mean(0)
+    mu_y = x_from.mean(0)
+
+    x0 = x_to - mu_x
+    y0 = x_from - mu_y
+
+    ss_x = (x0 ** 2.).sum()
+    ss_y = (y0 ** 2.).sum()
+
+    # Centred Frobenius norm.
+    norm_x = np.sqrt(ss_x)
+    norm_y = np.sqrt(ss_y)
+
+    # Scale to equal (unit) norm.
+    x0 /= norm_x
+    y0 /= norm_y
+
+    if my < m:
+        y0 = np.concatenate((y0, np.zeros(n, m - my)), 0)
+
+    # Optimum rotation matrix of Y.
+    A = np.dot(x0.T, y0)
+
+    try:
+        U, s, Vt = np.linalg.svd(A, full_matrices=False)
+    except:
+        if gentle:
+            print('WARNING: SVD failed, returning non-changed data.')
+            return x_from
+        else:
+            raise
+
+    V = Vt.T
+    T = np.dot(V, U.T)
+
+    if reflection is not 'best':
+        have_reflection = np.linalg.det(T) < 0
+        if reflection != have_reflection:
+            V[:, -1] *= -1
+            s[-1] *= -1
+            T = np.dot(V, U.T)
+
+    trace_TA = s.sum()
+
+    if scaling:
+        Z = norm_x * trace_TA * np.dot(y0, T) + mu_x
+    else:
+        Z = norm_y * np.dot(y0, T) + mu_x
+
+    return Z
