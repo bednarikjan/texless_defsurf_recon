@@ -528,7 +528,7 @@ def normals2depth(nmap, s=1.0, t=0.0):
     return dmap
 
 
-def procrustes(x_to, x_from, scaling=False, reflection='best', gentle=True):
+def procrustes(x_to, x_from, scaling=False, reflection=False, gentle=True):
     """ Finds Procrustes tf of `x_form` to best match `x_to`.
 
     Args:
@@ -583,12 +583,11 @@ def procrustes(x_to, x_from, scaling=False, reflection='best', gentle=True):
     V = Vt.T
     T = np.dot(V, U.T)
 
-    if reflection is not 'best':
-        have_reflection = np.linalg.det(T) < 0
-        if reflection != have_reflection:
-            V[:, -1] *= -1
-            s[-1] *= -1
-            T = np.dot(V, U.T)
+    # Undo unintended reflection.
+    if not reflection and np.linalg.det(T) < 0:
+        V[:, -1] *= -1
+        s[-1] *= -1
+        T = np.dot(V, U.T)
 
     trace_TA = s.sum()
 
@@ -598,3 +597,98 @@ def procrustes(x_to, x_from, scaling=False, reflection='best', gentle=True):
         Z = norm_y * np.dot(y0, T) + mu_x
 
     return Z
+
+
+def dmap2pcloud_persp(dmap, K):
+    """ Generates the point cloud from given depth map `dm_gt` using intrinsic
+    camera matrix `K`.
+
+    Args:
+        dmap (np.array): Depth map, shape (H, W).
+        K (np.array): Camera intrinsic matrix, shape (3, 3).
+
+    Returns:
+        np.array: Point cloud, shape (P, 3), P is # non-zero depth values.
+    """
+
+    Kinv = np.linalg.inv(K)
+
+    y, x = np.where(dmap != 0.0)
+    N = y.shape[0]
+    z = dmap[y, x]
+
+    pts_proj = np.vstack((x[None, :], y[None, :], np.ones((1, N))) * z[None, :])
+    pcloud = (Kinv @ pts_proj).T
+
+    return pcloud.astype(np.float32)
+
+
+def dmap2pcloud_ortho(dmap, s):
+    """ Converts the dmap to point cloud using orthographic reprojection. Only
+    considers non-zero depth values.
+
+    Args:
+        dmap (np.array): Depth map, shape (H, W).
+        s (float): dx/du, real world spatial size corresponding to one pixel.
+
+    Returns:
+        np.float: Pcloud, shape (P, 3), P is # non-zero depth values.
+    """
+    H, W = dmap.shape
+    mask = get_mask(dmap)
+    grid = np.stack(np.meshgrid(np.arange(W), np.arange(H)), axis=2) - \
+           np.array([W // 2, H // 2])[None, None, :]
+    return np.concatenate([grid * s, dmap[..., None]], axis=2)[mask]
+
+
+def estim_st_dmap_ortho(dmap_to, dmap_from, K):
+    """ Estimates the best scale and translation of the depth map
+    `dmap_from` w.r.t. `dmap_to`. It is assumed that the point cloud
+    can be obtained from `dmap_to` by perspective reprojection, whereas
+    the pointcloud from `dmap_from` can be obtained by orthographic
+    reprojection.
+
+    Args:
+        dmap_to (np.array): Depth map to which the `dmap_from` should be
+            aligned, shape (H, W).
+        dmap_from (np.array): Depth map to be aligned, shape (H, W).
+        K (np.array): Camera intrinsic matrix, shape (3, 3).
+
+    Returns:
+        s (float): Optimal scale.
+        t (float): Optimal translation.
+    """
+    mask = get_mask(dmap_to)
+    dmap_from *= mask
+    num_d = np.sum(mask)
+
+    pc_persp = dmap2pcloud_persp(dmap_to, K)
+    pc_ortho = dmap2pcloud_ortho(dmap_from, 1.)
+
+    A = np.stack([pc_ortho.flatten(),
+                  np.tile(np.array([0., 0., 1.]), num_d)], axis=1)
+    b = pc_persp.flatten()
+    s, t = np.linalg.solve(A.T @ A, A.T @ b)
+    return s, t
+
+
+def estim_st_dmap_persp(dmap_to, dmap_from):
+    """ Estimates the best scale and translation of the depth map
+    `dmap_from` w.r.t. `dmap_to`. It is assumed that pointclouds
+    from both depth maps can be obtained by perspective reprojection.
+
+    Args:
+        dmap_to (np.array): Depth map to which the `dmap_from` should be
+            aligned, shape (H, W).
+        dmap_from (np.array): Depth map to be aligned, shape (H, W).
+
+    Returns:
+        s (float): Optimal scale.
+        t (float): Optimal translation.
+    """
+    mask = get_mask(dmap_to)
+    num_d = np.sum(mask)
+    A = np.stack([dmap_from[mask], np.ones(num_d, )], axis=1)
+    b = dmap_to[mask]
+    s, t = np.linalg.solve(A.T @ A, A.T @ b)
+    return s, t
